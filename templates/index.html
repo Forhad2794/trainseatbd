@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Home | Train Seat Matrix</title>
+    <!-- SEO Meta Tags -->
+    <meta name="description"
+        content="View segmented seat availability and fare matrix for Bangladesh Railway trains. Quickly check available seats by route and class.">
+    <meta name="keywords"
+        content="Bangladesh Railway, train seat availability, segmented seat matrix, travel, transportation, railway schedule, Bangladesh travel">
+    <meta name="author" content="Nishat Mahmud">
+    <meta name="publish_date" content="2025-05-13" scheme="YYYY-MM-DD">
+    <!-- Open Graph Meta Tags -->
+    <meta property="og:title" content="Train Seat Matrix with Segmentation for Bangladesh Railway">
+    <meta property="og:description"
+        content="Easily check segmented seat availability and fare matrix for Bangladesh Railway trains.">
+    <meta property="og:image"
+        content="https://raw.githubusercontent.com/nishatrhythm/Bangladesh-Railway-Train-Seat-Matrix-Web-Application/main/images/link_share_image.png">
+    <meta property="og:image:width" content="1200">
+    <meta property="og:image:height" content="630">
+    <meta property="og:url" content="https://seat.onrender.com">
+    <meta property="og:type" content="website">
+
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <link rel="icon"
+        href="https://raw.githubusercontent.com/nishatrhythm/Bangladesh-Railway-Train-and-Fare-List-with-Route-Map/main/images/bangladesh-railway.png">
+    <link rel="stylesheet" href="/static/css/styles.css">
+    <script id="app-config" type="application/json">
+        {{ CONFIG | tojson | safe }}
+    </script>
+</head>
+
+<body>
+    <div class="flyout-notification" id="flyoutNotification">
+        <span id="flyoutMessage"></span>
+        <i class="fas fa-times flyout-close" id="flyoutClose"></i>
+    </div>
+    <noscript>
+        <div class="container noscript-warning">
+            <h2><i class="fas fa-exclamation-circle"></i> Please Enable JavaScript</h2>
+            <p>This website requires JavaScript to function properly. Enable it in your browser settings to access full
+                functionality and check train seat availability.</p>
+            <div class="instructions">
+                <strong>How to enable:</strong> Go to your browser settings > Privacy/Security > Enable JavaScript.
+                Refresh the page after enabling.
+            </div>
+        </div>
+    </noscript>
+    
+    <div class="container main-content">
+        <h1><i class="fas fa-subway"></i> BR Train Seat Matrix <sup class="beta-badge">BETA</sup></h1>
+
+        {% if CONFIG and CONFIG.queue_enabled %}
+        <p class="note bengali">
+            <span class="note-bold highlight">লক্ষ্য করুনঃ </span> বর্তমানে আমাদের ওয়েবসাইটে অতিরিক্ত ব্যবহারকারীর চাপ রয়েছে। এজন্য আমরা একটি ধারাবাহিক অর্ডারে সেবা প্রদান করছি। ফলে আপনাকে বেশ কিছুটা সময় অপেক্ষা করতে হতে পারে এবং কখনো কখনো ফলাফল পুরোপুরি নির্ভুল নাও হতে পারে। যদি আপনি দ্রুত এবং আরও নির্ভুল ফলাফল পেতে চান, সেক্ষেত্রে নিচের গিটহাব লিংক থেকে প্রজেক্টের সোর্স কোড ডাউনলোড করে নিজস্ব কম্পিউটারে ব্যবহার করার অনুরোধ জানানো যাচ্ছে।
+        </p><br>
+        {% endif %}
+        
+        {% if error %}
+        <div class="error shake">
+            <i class="fas fa-exclamation-circle error-icon"></i> {{ error }}
+        </div>
+        {% endif %}
+        
+        <form action="/matrix" method="POST" id="matrixForm">
+            <div class="form-row">
+                <div class="form-group">
+                    <label for="train_model">Train Name</label>
+                    <div class="input-with-icon custom-dropdown" id="train-model-dropdown">
+                        <i class="fas fa-train input-icon"></i>
+                        <input type="text" id="train-model-input" placeholder="Enter train name" autocomplete="off"
+                            value="{{ form_values.train_model if form_values else '' }}">
+                        <input type="hidden" id="train_model" name="train_model"
+                            value="{{ form_values.train_model if form_values else '' }}">
+                        <div class="dropdown-menu" id="train-model-menu" style="display: none;">
+                            <div class="dropdown-options" id="train-model-options">
+                                {% for train in trains %}
+                                <div class="dropdown-option" data-value="{{ train }}">{{ train }}</div>
+                                {% endfor %}
+                            </div>
+                        </div>
+                    </div>
+                    <span class="error-message" id="train_model-error">Train model is required</span>
+                </div>
+                <div class="form-group">
+                    <label for="date">Date of Journey</label>
+                    <div class="input-with-icon">
+                        <i class="fas fa-calendar-alt input-icon"></i>
+                        <input type="text" id="date" name="date" readonly placeholder="Select a date"
+                            value="{{ form_values.date if form_values else '' }}" data-min-date="{{ min_date }}"
+                            data-max-date="{{ max_date }}" data-bst-midnight-utc="{{ bst_midnight_utc }}" />
+                        <div class="calendar-dialog" id="materialCalendar" style="display: none;">
+                            <div class="calendar-header">
+                                <button type="button" class="calendar-nav prev" id="prevMonthBtn">❮</button>
+                                <div class="calendar-month-year" id="calendarTitle"></div>
+                                <button type="button" class="calendar-nav next" id="nextMonthBtn">❯</button>
+                            </div>
+                            <div class="calendar-grid">
+                                <div class="calendar-weekdays">
+                                    <span>Sun</span><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span>
+                                </div>
+                                <div class="calendar-days" id="calendarDays"></div>
+                            </div>
+                        </div>
+                    </div>
+                    <span class="error-message" id="date-error">Date of journey is required</span>
+                </div>
+            </div>
+            <div class="form-group submit-btn">
+                <button type="submit" class="btn-primary">
+                    <i class="fas fa-calculator"></i> Generate Matrix
+                </button>
+            </div>
+        </form>
+        <footer class="new-footer">
+            <p>This project is open source. Check it out on <a
+                    href="https://github.com/nishatrhythm/Bangladesh-Railway-Train-Seat-Matrix-Web-Application"
+                    target="_blank">GitHub</a>.</p>
+        </footer>
+
+        <div class="footer-links">
+            <a href="https://trainseat.onrender.com" target="_blank">Seat Availability</a>
+            <span class="dot">•</span>
+            <a href="https://bdrailway.vercel.app" target="_blank">Train Fare</a>
+            <span class="dot">•</span>
+            <a href="https://forms.gle/NV72PC1z75sq77tg7" target="_blank">Feedback</a>
+        </div>
+
+        {% if is_banner_enabled %}
+        <div id="bannerModal" class="modal">
+            <div class="modal-content">
+                <span class="close-modal"><i class="fas fa-times"></i></span>
+                <div id="bannerImageContainer"></div>
+                <div class="modal-footer">
+                    <label class="custom-checkbox">
+                        <input type="checkbox" id="dontShowAgain">
+                        <span class="checkmark"></span>
+                        Don't show this again
+                    </label>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+    </div>
+    <script src="/static/js/script.js"></script>
+    <script>
+        sessionStorage.removeItem('queuePageVisited');
+        sessionStorage.removeItem('queueRedirecting');
+        sessionStorage.removeItem('lastStatusCheck');
+    </script>
+</body>
+
+</html>
