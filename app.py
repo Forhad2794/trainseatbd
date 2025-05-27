@@ -1,17 +1,22 @@
+# app.py
 from flask import Flask, render_template, request, redirect, url_for, session, jsonify
 from datetime import datetime, timedelta
 import json, pytz, os, re, uuid
-from matrixCalculator import compute_matrix
-from request_queue import RequestQueue
+from matrixCalculator import compute_matrix # Assuming this exists and works
+from request_queue import RequestQueue     # Assuming this exists and works
 
 app = Flask(__name__)
-app.secret_key = "super_secret_key"
+app.secret_key = "super_secret_key" # IMPORTANT: Change this to a strong, random key in production!
 
-RESULT_CACHE = {}
+# Global caches and configs
+RESULT_CACHE = {} # You can remove this if RequestQueue handles all result storage
+                  # It seems your RequestQueue already stores results, so this might be redundant.
 
 with open('config.json', 'r', encoding='utf-8') as config_file:
     CONFIG = json.load(config_file)
 
+# Pre-load CSS/JS content - this is fine for small files, but for larger apps,
+# Flask's static file serving is more typical.
 with open('static/js/script.js', 'r', encoding='utf-8') as js_file:
     SCRIPT_JS_CONTENT = js_file.read()
 with open('static/css/styles.css', 'r', encoding='utf-8') as css_file:
@@ -76,16 +81,18 @@ def home():
     bst_now = datetime.now(bst_tz)
     min_date = bst_now.replace(hour=0, minute=0, second=0, microsecond=0)
     max_date = min_date + timedelta(days=10)
-    bst_midnight_utc = min_date.astimezone(pytz.UTC).strftime('%Y-%m-%dT%H:%M:%SZ')
+    # This line seems unnecessary if you're not passing it to JS for specific use
+    # bst_midnight_utc = min_date.astimezone(pytz.UTC).strftime('%Y-%m-%dT%H:%M:%SZ') 
 
-    if request.method == 'GET' and not session.get('form_submitted', False):
-        session.pop('form_values', None)
-    else:
-        session['form_submitted'] = False
+    # We will no longer rely on session['form_submitted'] for fresh forms.
+    # The home page always starts fresh for a new search.
+    session.pop('form_values', None) # Clear any old form values from session
 
-    form_values = session.get('form_values', {})
-    if not form_values:
-        form_values = None
+    # form_values are generally not needed on the home page for a fresh search,
+    # unless you want to pre-fill from a previous *successful* search.
+    # If you want to retain form values, you'd pull them from session or URL params
+    # only after a successful result display.
+    form_values = None 
 
     return render_template(
         'index.html',
@@ -95,9 +102,9 @@ def home():
         banner_image=banner_image,
         min_date=min_date.strftime("%Y-%m-%d"),
         max_date=max_date.strftime("%Y-%m-%d"),
-        bst_midnight_utc=bst_midnight_utc,
+        # bst_midnight_utc=bst_midnight_utc, # Remove if not used
         show_disclaimer=True,
-        form_values=form_values,
+        form_values=form_values, # This will be None on initial load
         trains=trains,
         styles_css=STYLES_CSS_CONTENT,
         script_js=SCRIPT_JS_CONTENT
@@ -117,6 +124,7 @@ def matrix():
         return redirect(url_for('home'))
 
     try:
+        # Date format parsing remains the same
         date_obj = datetime.strptime(journey_date_str, '%d-%b-%Y')
         api_date_format = date_obj.strftime('%Y-%m-%d')
     except ValueError:
@@ -125,38 +133,46 @@ def matrix():
 
     model_match = re.match(r'.*\((\d+)\)$', train_model_full)
     if model_match:
-        train_model = model_match.group(1)
+        train_model_code = model_match.group(1) # Using a new variable name for clarity
     else:
-        train_model = train_model_full.split('(')[0].strip()
+        train_model_code = train_model_full.split('(')[0].strip()
 
     try:
         form_values = {
-            'train_model': train_model_full,
-            'date': journey_date_str
+            'train_model_full': train_model_full, # Keep the full name for display
+            'train_model_code': train_model_code, # Keep the code for API call
+            'date': journey_date_str,
+            'api_date_format': api_date_format # Store this too
         }
+        # Store form_values in session, but only for the duration of the queue process
         session['form_values'] = form_values
-        session['form_submitted'] = True
 
         request_id = request_queue.add_request(
             process_matrix_request,
             {
-                'train_model': train_model,
+                'train_model_code': train_model_code, # Use code for compute_matrix
                 'journey_date_str': journey_date_str,
                 'api_date_format': api_date_format,
-                'form_values': form_values
+                'form_values': form_values # Pass form_values to the queued function
             }
         )
         
         session['queue_request_id'] = request_id
         
+        # Redirect to queue_wait. The show_results will handle the final display.
         return redirect(url_for('queue_wait'))
     except Exception as e:
         session['error'] = f"{str(e)}"
         return redirect(url_for('home'))
 
-def process_matrix_request(train_model, journey_date_str, api_date_format, form_values):
+def process_matrix_request(train_model_code, journey_date_str, api_date_format, form_values):
+    """
+    This function is run by the RequestQueue.
+    It takes the criteria and calls compute_matrix.
+    """
     try:
-        result = compute_matrix(train_model, journey_date_str, api_date_format)
+        # Use train_model_code for compute_matrix as that's what your regex extracted.
+        result = compute_matrix(train_model_code, journey_date_str, api_date_format)
         if not result or 'stations' not in result:
             return {"error": "No data received. Please try a different train or date."}
         
@@ -171,22 +187,49 @@ def queue_wait():
         return maintenance_response
     
     request_id = session.get('queue_request_id')
+    
+    # If no request_id in session, it means they might have refreshed queue_wait directly
+    # or came from a page without starting a search.
     if not request_id:
-        session['error'] = "Your request session has expired. Please search again."
+        session['error'] = "Your request session has expired or was not initiated. Please search again."
         return redirect(url_for('home'))
     
     status = request_queue.get_request_status(request_id)
-    if not status:
-        session['error'] = "Your request could not be found. Please search again."
-        return redirect(url_for('home'))
     
-    if request.args.get('refresh_check') == 'true':
-        request_queue.cancel_request(request_id)
-        session.pop('queue_request_id', None)
-        session['error'] = "Page was refreshed. Please start a new search."
-        return redirect(url_for('home'))
+    # If the request_id exists but the status is gone (e.g., cleaned up by queue),
+    # or if the request is completed, redirect to show_results with parameters.
+    if not status or status["status"] == "completed":
+        queue_result = request_queue.get_request_result(request_id)
+        if queue_result and queue_result.get("success"):
+            form_vals = queue_result.get("form_values", {})
+            train_name_full = form_vals.get('train_model_full', '')
+            journey_date = form_vals.get('date', '')
+            # Pass train_name_full and journey_date to the results page
+            return redirect(url_for('show_results', request_id=request_id,
+                                    train_name=train_name_full, date=journey_date))
+        else:
+            # If request failed or no successful result, show error and redirect home.
+            session['error'] = queue_result.get("error", "An unknown error occurred after processing.")
+            return redirect(url_for('home'))
+
+    # If status is not completed, stay on queue page.
+    # The 'refresh_check' logic should be handled by client-side JS on queue.html,
+    # or ideally, not block on a server-side redirect for mere refresh.
+    # The current 'refresh_check' logic essentially cancels the request if you refresh,
+    # which is likely the cause of your issue. We need to modify this.
     
-    form_values = session.get('form_values', {})
+    # --- IMPORTANT CHANGE HERE ---
+    # Remove or modify the 'refresh_check' logic to avoid cancelling on simple refresh.
+    # If the user refreshes queue_wait, they just want an updated queue status, not a cancellation.
+    # The current code below is problematic:
+    # if request.args.get('refresh_check') == 'true':
+    #     request_queue.cancel_request(request_id)
+    #     session.pop('queue_request_id', None)
+    #     session['error'] = "Page was refreshed. Please start a new search."
+    #     return redirect(url_for('home'))
+    # --- END IMPORTANT CHANGE ---
+    
+    form_values = session.get('form_values', {}) # Keep form_values for queue display
     
     return render_template(
         'queue.html',
@@ -198,7 +241,7 @@ def queue_wait():
     )
 
 @app.route('/queue_status/<request_id>')
-def queue_status(request_id):
+def queue_status_api(request_id): # Renamed to avoid conflict with queue_wait route
     status = request_queue.get_request_status(request_id)
     if not status:
         return jsonify({"error": "Request not found"}), 404
@@ -207,6 +250,20 @@ def queue_status(request_id):
         result = request_queue.get_request_result(request_id)
         if result and "error" in result:
             status["errorMessage"] = result["error"]
+            
+    # If the request is completed, return the result directly via this API endpoint
+    # so the client-side JS can trigger the redirect.
+    if status["status"] == "completed":
+        completed_result = request_queue.get_request_result(request_id)
+        if completed_result and completed_result.get("success"):
+            # Ensure form_values are sent back so client can redirect to show_results with them
+            status["redirect_params"] = {
+                "request_id": request_id,
+                "train_name": completed_result["form_values"].get("train_model_full", ""),
+                "date": completed_result["form_values"].get("date", "")
+            }
+        else:
+            status["error_message"] = completed_result.get("error", "Failed to retrieve results.")
     
     return jsonify(status)
 
@@ -242,72 +299,121 @@ def queue_heartbeat(request_id):
     except Exception as e:
         return jsonify({"status": "error", "error": str(e)}), 500
 
+# Modified /show_results route
 @app.route('/show_results')
-def show_results():
-    maintenance_response = check_maintenance()
-    if maintenance_response:
-        return maintenance_response
-
-    request_id = session.get('queue_request_id')
-    if not request_id:
-        session['error'] = "Your request session has expired. Please search again."
-        return redirect(url_for('home'))
-    return redirect(url_for('show_results_with_id', request_id=request_id))
-
 @app.route('/show_results/<request_id>')
-def show_results_with_id(request_id):
+def show_results(request_id=None): # request_id is now optional
     maintenance_response = check_maintenance()
     if maintenance_response:
         return maintenance_response
 
-    queue_result = request_queue.get_request_result(request_id)
-    
-    if not queue_result:
-        session['error'] = "Your request has expired or could not be found. Please search again."
-        return redirect(url_for('home'))
-    
-    if "error" in queue_result:
-        session['error'] = queue_result["error"]
-        return redirect(url_for('home'))
-    
-    if not queue_result.get("success"):
-        session['error'] = "An error occurred while processing your request. Please try again."
-        return redirect(url_for('home'))
-    
-    result = queue_result.get("result", {})
-    form_values = queue_result.get("form_values", {})
-    
-    if session.get('queue_request_id') == request_id:
-        session.pop('queue_request_id', None)
-    
-    return render_template(
-        'matrix.html',
-        **result,
-        form_values=form_values,
-        styles_css=STYLES_CSS_CONTENT,
-        script_js=SCRIPT_JS_CONTENT
-    )
+    result = {}
+    form_values = {}
+    message = ""
 
-@app.route('/matrix_result')
-def matrix_result():
-    maintenance_response = check_maintenance()
-    if maintenance_response:
-        return maintenance_response
+    # Attempt to retrieve from queue cache using request_id from URL or session
+    if request_id:
+        queue_result = request_queue.get_request_result(request_id)
+        if queue_result and queue_result.get("success"):
+            result = queue_result.get("result", {})
+            form_values = queue_result.get("form_values", {})
+            # Remove from session if we are displaying a direct ID result (optional, depends on caching strategy)
+            if session.get('queue_request_id') == request_id:
+                session.pop('queue_request_id', None)
+            
+            # Since we found a cached result, display it
+            return render_template(
+                'matrix.html',
+                **result, # Unpack the result dictionary (stations, etc.)
+                form_values=form_values,
+                styles_css=STYLES_CSS_CONTENT,
+                script_js=SCRIPT_JS_CONTENT
+            )
+        elif queue_result and "error" in queue_result:
+            # If queue result exists but indicates an error
+            message = queue_result["error"]
+            # Fall through to try re-calculation from URL parameters
 
-    result_id = session.pop('result_id', None)
-    result = RESULT_CACHE.pop(result_id, None) if result_id else None
-    form_values = session.get('form_values', None)
+    # If no valid request_id result, or if it failed, try to re-process from URL parameters
+    # This handles direct access, refresh, or failed queue lookup.
+    train_name_full = request.args.get('train_name', '').strip() # This is the full train name from URL
+    journey_date_str = request.args.get('date', '').strip()     # This is the date from URL
 
-    if not result:
+    if train_name_full and journey_date_str:
+        try:
+            # Re-extract train_model_code as it's needed for compute_matrix
+            model_match = re.match(r'.*\((\d+)\)$', train_name_full)
+            if model_match:
+                train_model_code = model_match.group(1)
+            else:
+                train_model_code = train_name_full.split('(')[0].strip()
+
+            date_obj = datetime.strptime(journey_date_str, '%d-%b-%Y') # Original format
+            api_date_format = date_obj.strftime('%Y-%m-%d') # Format for API
+
+            # Re-compute the matrix directly
+            result = compute_matrix(train_model_code, journey_date_str, api_date_format)
+            if not result or 'stations' not in result:
+                message = "No data received for these criteria. Please try again."
+            else:
+                form_values = {
+                    'train_model_full': train_name_full,
+                    'train_model_code': train_model_code,
+                    'date': journey_date_str,
+                    'api_date_format': api_date_format
+                }
+                # Display the re-computed result
+                return render_template(
+                    'matrix.html',
+                    **result,
+                    form_values=form_values,
+                    styles_css=STYLES_CSS_CONTENT,
+                    script_js=SCRIPT_JS_CONTENT
+                )
+        except ValueError:
+            message = "Invalid date format in URL. Please search again."
+        except Exception as e:
+            message = f"An error occurred while re-fetching data: {str(e)}"
+    else:
+        message = message or "Your request has expired or could not be found. Please search again from home."
+        # If no request_id and no URL params, or an error, show message and redirect to home.
+        session['error'] = message
         return redirect(url_for('home'))
 
-    return render_template(
-        'matrix.html',
-        **result,
-        form_values=form_values,
-        styles_css=STYLES_CSS_CONTENT,
-        script_js=SCRIPT_JS_CONTENT
-    )
+    # If we reached here, it means either a cached result wasn't found and re-computation failed
+    # or initial message was set due to error.
+    session['error'] = message # Ensure the error message is passed to home
+    return redirect(url_for('home'))
+
+
+# Your existing routes below this are likely fine as they are.
+# @app.route('/matrix_result') - This route seems redundant now that show_results handles everything.
+#                                Consider removing it to simplify your app.
+#                                If it's for an older flow, you might need to update its callers.
+# Your code uses RESULT_CACHE.pop(result_id, None) which means it's one-time use.
+# The new show_results route will either use the queue's stored result or re-calculate.
+
+
+# @app.route('/matrix_result') # <--- Consider removing this route
+# def matrix_result():
+#     maintenance_response = check_maintenance()
+#     if maintenance_response:
+#         return maintenance_response
+#
+#     result_id = session.pop('result_id', None)
+#     result = RESULT_CACHE.pop(result_id, None) if result_id else None
+#     form_values = session.get('form_values', None)
+#
+#     if not result:
+#         return redirect(url_for('home'))
+#
+#     return render_template(
+#         'matrix.html',
+#         **result,
+#         form_values=form_values,
+#         styles_css=STYLES_CSS_CONTENT,
+#         script_js=SCRIPT_JS_CONTENT
+#     )
 
 @app.route('/queue_stats')
 def queue_stats():
