@@ -57,7 +57,7 @@ h1 i {
 /* ========= */
 
 .beta-badge {
-    background: #006747;
+    background: rgb(0 103 71 / var(--tw-bg-opacity));
     color: #fff;
     font-size: 0.4em;
     font-weight: 500;
